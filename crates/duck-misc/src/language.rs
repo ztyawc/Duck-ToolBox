@@ -1,44 +1,22 @@
-use std::{
-    collections::BTreeSet,
-    fs,
-    io::{Read, Write},
-    path::PathBuf,
-};
+use std::collections::BTreeSet;
+#[cfg(test)]
+use std::{fs, path::PathBuf};
 
 use anyhow::{Result, ensure};
 use duck_core::Context;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
-const MAX_BYTES: u64 = 65536;
+use crate::store::{self, Error, MAX_BYTES, RuleConfig, Spec, valid_package};
+#[cfg(test)]
+use crate::store::{Revision, Save, active, code_of};
 
-#[derive(Debug, thiserror::Error)]
-enum Error {
-    #[error("Invalid language configuration")]
-    InvalidConfig,
-    #[error("Language rules exceed the 64 KiB configuration limit")]
-    ConfigTooLarge,
-    #[error("The saved configuration changed; refresh before saving")]
-    StaleRevision,
-    #[error("Another language configuration operation is running")]
-    Busy,
-    #[error("Add at least one application rule before enabling")]
-    EmptyRules,
-    #[error("Enable the module and reboot to load the language runtime")]
-    RuntimeUnavailable,
-}
+const SPEC: Spec = Spec {
+    subdir: "misc/language",
+    domain: b"duck-misc/language/v1\0",
+    marker: "play-integrity/language-spoof.version",
+};
 
-pub(crate) fn code_of(error: &anyhow::Error) -> &'static str {
-    match error.downcast_ref::<Error>() {
-        Some(Error::InvalidConfig) => "invalid_config",
-        Some(Error::ConfigTooLarge) => "config_too_large",
-        Some(Error::StaleRevision) => "stale_revision",
-        Some(Error::Busy) => "operation_busy",
-        Some(Error::EmptyRules) => "empty_rules",
-        Some(Error::RuntimeUnavailable) => "runtime_unavailable",
-        None => "state_unavailable",
-    }
-}
+pub type Status = store::Status<Config>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -52,87 +30,6 @@ pub struct Rule {
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub rules: Vec<Rule>,
-}
-
-#[derive(Serialize)]
-pub struct Status {
-    config: Option<Config>,
-    config_error: Option<String>,
-    revision: String,
-    enabled: bool,
-    payload_installed: bool,
-    parent_active: bool,
-    restart_required: bool,
-}
-
-fn directory(ctx: &Context) -> PathBuf {
-    ctx.paths.var_dir.join("misc/language")
-}
-
-fn open_read(path: &std::path::Path) -> Result<Option<fs::File>> {
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-    match options.open(path) {
-        Ok(file) => {
-            ensure!(file.metadata()?.is_file(), Error::InvalidConfig);
-            Ok(Some(file))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.into()),
-    }
-}
-
-fn raw(ctx: &Context) -> Result<Vec<u8>> {
-    let Some(file) = open_read(&directory(ctx).join("rules.json"))? else {
-        return Ok(vec![]);
-    };
-    let mut bytes = vec![];
-    file.take(MAX_BYTES + 1).read_to_end(&mut bytes)?;
-    ensure!(bytes.len() as u64 <= MAX_BYTES, Error::InvalidConfig);
-    Ok(bytes)
-}
-
-fn activation(ctx: &Context) -> Result<Vec<u8>> {
-    let Some(file) = open_read(&directory(ctx).join("enabled"))? else {
-        return Ok(vec![]);
-    };
-    let mut bytes = vec![];
-    file.take(65).read_to_end(&mut bytes)?;
-    ensure!(bytes.len() <= 64, Error::InvalidConfig);
-    Ok(bytes)
-}
-
-fn revision(bytes: &[u8], activation: &[u8]) -> String {
-    let mut hash = Sha256::new();
-    hash.update(b"duck-misc/language/v1\0");
-    hash.update((bytes.len() as u64).to_le_bytes());
-    hash.update(bytes);
-    hash.update(activation);
-    hex::encode(hash.finalize())
-}
-
-fn parse(bytes: &[u8]) -> Result<Config> {
-    if bytes.is_empty() {
-        return Ok(Config::default());
-    }
-    let mut config: Config = serde_json::from_slice(bytes).map_err(|_| Error::InvalidConfig)?;
-    validate(&mut config)?;
-    Ok(config)
-}
-
-fn valid_package(name: &str) -> bool {
-    name.len() <= 255
-        && name.contains('.')
-        && name.split('.').all(|part| {
-            !part.is_empty()
-                && part.as_bytes()[0].is_ascii_alphabetic()
-                && part.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
-        })
 }
 
 // Accept the language[-Script][-REGION] forms used by Android; reject extensions,
@@ -196,162 +93,55 @@ fn validate(config: &mut Config) -> Result<()> {
     Ok(())
 }
 
+impl RuleConfig for Config {
+    fn is_empty(&self) -> bool {
+        self.rules.is_empty()
+    }
+
+    fn validate(&mut self) -> Result<()> {
+        validate(self)
+    }
+}
+
 pub fn status(ctx: &Context) -> Result<Status> {
-    let bytes = raw(ctx)?;
-    let activation = activation(ctx)?;
-    let enabled = active(&activation);
-    let config = parse(&bytes);
-    Ok(Status {
-        config_error: config.as_ref().err().map(|_| "invalid_config".into()),
-        config: config.ok(),
-        revision: revision(&bytes, &activation),
-        enabled,
-        payload_installed: payload_installed(ctx),
-        parent_active: absent(&ctx.paths.root.join("disable"))
-            && absent(&ctx.paths.root.join("remove")),
-        restart_required: true,
-    })
-}
-
-fn active(bytes: &[u8]) -> bool {
-    bytes.starts_with(b"1:")
-        && bytes.len() > 2
-        && bytes[2..]
-            .iter()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
-}
-
-fn absent(path: &std::path::Path) -> bool {
-    matches!(fs::symlink_metadata(path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
-}
-
-fn payload_installed(ctx: &Context) -> bool {
-    let marker = ctx.paths.root.join("play-integrity/language-spoof.version");
-    let Ok(Some(file)) = open_read(&marker) else {
-        return false;
-    };
-    let mut version = vec![];
-    file.take(16).read_to_end(&mut version).is_ok()
-        && version == b"1\n"
-        && ctx.paths.root.join("play-integrity/classes.dex").is_file()
-        && ctx.paths.root.join("zygisk/arm64-v8a.so").is_file()
-}
-
-fn lock(ctx: &Context) -> Result<fs::File> {
-    let directory = directory(ctx);
-    fs::create_dir_all(&directory)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        let private = fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
-            .open(&directory)?;
-        private.set_permissions(fs::Permissions::from_mode(0o700))?;
-    }
-    let mut options = fs::OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-    let lock = options.open(directory.join("write.lock"))?;
-    ensure!(lock.metadata()?.is_file(), Error::InvalidConfig);
-    match lock.try_lock() {
-        Ok(()) => {}
-        Err(fs::TryLockError::WouldBlock) => return Err(Error::Busy.into()),
-        Err(fs::TryLockError::Error(error)) => return Err(error.into()),
-    }
-    Ok(lock)
-}
-
-fn write(ctx: &Context, name: &str, bytes: &[u8]) -> Result<()> {
-    let directory = directory(ctx);
-    let mut file = tempfile::NamedTempFile::new_in(&directory)?;
-    file.write_all(bytes)?;
-    file.as_file().sync_all()?;
-    file.persist(directory.join(name))?;
-    fs::File::open(directory)?.sync_all()?;
-    Ok(())
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Revision {
-    revision: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Save {
-    revision: String,
-    config: Config,
-}
-
-fn input<T: serde::de::DeserializeOwned>() -> Result<T> {
-    let mut bytes = vec![];
-    std::io::stdin()
-        .take(MAX_BYTES + 1)
-        .read_to_end(&mut bytes)?;
-    ensure!(bytes.len() as u64 <= MAX_BYTES, Error::InvalidConfig);
-    serde_json::from_slice(&bytes).map_err(|_| Error::InvalidConfig.into())
-}
-
-fn check(ctx: &Context, expected: &str) -> Result<()> {
-    ensure!(
-        revision(&raw(ctx)?, &activation(ctx)?) == expected,
-        Error::StaleRevision
-    );
-    Ok(())
+    store::status(SPEC, ctx)
 }
 
 pub fn save(ctx: &Context) -> Result<Status> {
-    let request: Save = input()?;
-    save_request(ctx, request)
-}
-
-fn save_request(ctx: &Context, mut request: Save) -> Result<Status> {
-    validate(&mut request.config)?;
-    let _lock = lock(ctx)?;
-    check(ctx, &request.revision)?;
-    write(ctx, "rules.json", &serde_json::to_vec(&request.config)?)?;
-    status(ctx)
+    store::save_request(SPEC, ctx, store::input()?)
 }
 
 pub fn enable(ctx: &Context) -> Result<Status> {
-    let request: Revision = input()?;
-    enable_request(ctx, request)
-}
-
-fn enable_request(ctx: &Context, request: Revision) -> Result<Status> {
-    let _lock = lock(ctx)?;
-    check(ctx, &request.revision)?;
-    ensure!(!parse(&raw(ctx)?)?.rules.is_empty(), Error::EmptyRules);
-    let state = status(ctx)?;
-    ensure!(
-        state.payload_installed && state.parent_active,
-        Error::RuntimeUnavailable
-    );
-    set_activation(ctx, true)?;
-    status(ctx)
-}
-
-fn set_activation(ctx: &Context, enabled: bool) -> Result<()> {
-    let nonce = tempfile::NamedTempFile::new_in(directory(ctx))?;
-    let token = nonce.path().file_name().unwrap().to_string_lossy();
-    write(
-        ctx,
-        "enabled",
-        format!("{}:{token}", u8::from(enabled)).as_bytes(),
-    )
+    store::enable_request::<Config>(SPEC, ctx, store::input()?)
 }
 
 pub fn disable(ctx: &Context) -> Result<serde_json::Value> {
-    let _lock = lock(ctx)?;
-    set_activation(ctx, false)?;
-    Ok(serde_json::json!({"enabled": false, "restart_required": true}))
+    store::disable(SPEC, ctx)
+}
+
+#[cfg(test)]
+fn directory(ctx: &Context) -> PathBuf {
+    store::directory(SPEC, ctx)
+}
+#[cfg(test)]
+fn raw(ctx: &Context) -> Result<Vec<u8>> {
+    store::raw(SPEC, ctx)
+}
+#[cfg(test)]
+fn lock(ctx: &Context) -> Result<fs::File> {
+    store::lock(SPEC, ctx)
+}
+#[cfg(test)]
+fn write(ctx: &Context, name: &str, bytes: &[u8]) -> Result<()> {
+    store::write(SPEC, ctx, name, bytes)
+}
+#[cfg(test)]
+fn save_request(ctx: &Context, request: Save<Config>) -> Result<Status> {
+    store::save_request(SPEC, ctx, request)
+}
+#[cfg(test)]
+fn enable_request(ctx: &Context, request: Revision) -> Result<Status> {
+    store::enable_request::<Config>(SPEC, ctx, request)
 }
 
 #[cfg(test)]

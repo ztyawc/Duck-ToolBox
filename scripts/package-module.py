@@ -157,6 +157,14 @@ def validate_language_contract(manifest, module=MODULE):
         raise ValueError("Root Zygisk payload has an incompatible language contract")
 
 
+def validate_timezone_contract(manifest, module=MODULE):
+    if manifest.get("embedded", {}).get("timezone_contract") != 1:
+        raise ValueError("Root Zygisk payload has an incompatible timezone contract")
+    marker = module / "play-integrity/timezone-spoof.version"
+    if not marker.is_file() or marker.read_bytes() != b"1\n":
+        raise ValueError("Root Zygisk payload has an incompatible timezone contract")
+
+
 def validate():
     require(MODULE / "webroot/index.html")
     require(MODULE / "play-integrity/build.json")
@@ -201,9 +209,10 @@ def validate():
     ):
         raise ValueError("WebUI corresponding-source commit is missing or mismatched")
     embedded = manifest.get("embedded")
-    if not embedded or embedded.get("api") != 4 or embedded.get("language_contract") != 1 or embedded.get("device_faker_revision") != (ROOT / "components/device-faker/UPSTREAM_REVISION").read_text().strip():
+    if not embedded or embedded.get("api") != 4 or embedded.get("language_contract") != 1 or embedded.get("timezone_contract") != 1 or embedded.get("device_faker_revision") != (ROOT / "components/device-faker/UPSTREAM_REVISION").read_text().strip():
         raise ValueError("Root Zygisk payload does not contain the recorded embedded engine")
     validate_language_contract(manifest)
+    validate_timezone_contract(manifest)
     if any(path != MODULE / "module.prop" for path in MODULE.rglob("module.prop")):
         raise ValueError("The installable module must not contain a second root-manager module")
 

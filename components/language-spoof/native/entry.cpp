@@ -7,7 +7,7 @@ namespace duck::language {
 class Module : public zygisk::ModuleBase {
     zygisk::Api *api = nullptr;
     JNIEnv *env = nullptr;
-    std::string locale;
+    Policy policy;
     std::vector<char> dex;
     void unload() { api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY); }
     std::string string(jstring value) {
@@ -24,15 +24,15 @@ public:
         Target selected;
         if (!target(static_cast<unsigned>(args->uid), string(args->nice_name), string(args->app_data_dir), selected)) { unload(); return; }
         int fd = api->connectCompanion();
-        bool ready = fd >= 0 && exchange(fd, selected, locale, dex);
+        bool ready = fd >= 0 && exchange(fd, selected, policy, dex);
         if (fd >= 0) close(fd);
-        if (!ready) { locale.clear(); dex.clear(); unload(); }
+        if (!ready) { policy = {}; dex.clear(); unload(); }
     }
     void postAppSpecialize(const zygisk::AppSpecializeArgs *) override {
-        if (locale.empty()) return;
+        if (policy.empty()) return;
         // After ART installs any callbacks the shared ELF must remain resident,
         // including on a partial setup failure. The process owns the DEX buffer.
-        if (!install(env, locale, dex)) unload();
+        if (!install(env, policy, dex)) unload();
     }
     void preServerSpecialize(zygisk::ServerSpecializeArgs *) override { unload(); }
 };

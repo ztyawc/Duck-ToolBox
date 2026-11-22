@@ -83,13 +83,49 @@ static std::string locale(std::string_view tag) {
     }
     return result;
 }
+static std::string timezone_id(std::string_view id) {
+    // Backend emits canonical IANA identifiers (Area/Location[/Sublocation] or UTC).
+    // Reject POSIX TZ expressions, colons, paths and control characters before tzset/JNI.
+    if (id.size() < 3 || id.size() > 64) return {};
+    if (id.size() == 3
+        && std::toupper(static_cast<unsigned char>(id[0])) == 'U'
+        && std::toupper(static_cast<unsigned char>(id[1])) == 'T'
+        && std::toupper(static_cast<unsigned char>(id[2])) == 'C') {
+        return "UTC";
+    }
+    if (id.find('/') == id.npos) return {};
+    std::vector<std::string_view> parts;
+    for (size_t start = 0; start <= id.size();) {
+        auto end = id.find('/', start);
+        parts.push_back(id.substr(start, end == id.npos ? end : end - start));
+        if (end == id.npos) break;
+        start = end + 1;
+    }
+    if (parts.size() < 2 || parts.size() > 3) return {};
+    for (auto part : parts) {
+        if (part.empty() || part.size() > 32) return {};
+        auto first = static_cast<unsigned char>(part[0]);
+        if (first >= 128 || !std::isalpha(first)) return {};
+        if (!std::all_of(part.begin(), part.end(), [](unsigned char c) {
+                return c < 128 && (std::isalnum(c) || c == '_' || c == '-' || c == '+');
+            })) {
+            return {};
+        }
+    }
+    return std::string(id);
+}
 bool active(std::string_view value) {
     return value.size() > 2 && value.size() <= 64 && value.starts_with("1:")
         && std::all_of(value.begin() + 2, value.end(), [](unsigned char c) {
             return c < 128 && (std::isalnum(c) || c == '.' || c == '_' || c == '-');
         });
 }
-std::string select(std::string_view text, const Target &target) {
+static std::string select_field(
+    std::string_view text,
+    const Target &target,
+    const char *field,
+    std::string (*normalize)(std::string_view)
+) {
     bool valid = true;
     std::vector<std::set<std::string>> keys;
     auto callback = [&](int depth, nlohmann::json::parse_event_t event, nlohmann::json &value) {
@@ -108,16 +144,22 @@ std::string select(std::string_view text, const Target &target) {
     std::set<std::pair<unsigned, std::string>> targets;
     for (const auto &rule : config["rules"]) {
         if (!rule.is_object() || rule.size() != 3 || !rule.contains("package_name") || !rule["package_name"].is_string()
-            || !rule.contains("user_id") || !rule["user_id"].is_number_unsigned() || !rule.contains("locale") || !rule["locale"].is_string()) return {};
+            || !rule.contains("user_id") || !rule["user_id"].is_number_unsigned() || !rule.contains(field) || !rule[field].is_string()) return {};
         const auto &name = rule["package_name"].get_ref<const std::string &>();
-        auto tag = locale(rule["locale"].get_ref<const std::string &>());
-        if (!package_name(name) || tag.empty() || rule["user_id"].get<uint64_t>() > 21473) return {};
+        auto value = normalize(rule[field].get_ref<const std::string &>());
+        if (!package_name(name) || value.empty() || rule["user_id"].get<uint64_t>() > 21473) return {};
         if (!targets.emplace(rule["user_id"].get<unsigned>(), name).second) return {};
         if (name == target.package && rule["user_id"].get<unsigned>() == target.uid / 100000) {
             if (!selected.empty()) return {};
-            selected = tag;
+            selected = value;
         }
     }
     return selected;
+}
+std::string select(std::string_view text, const Target &target) {
+    return select_field(text, target, "locale", locale);
+}
+std::string select_timezone(std::string_view text, const Target &target) {
+    return select_field(text, target, "timezone", timezone_id);
 }
 }

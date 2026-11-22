@@ -2,10 +2,12 @@
 #include <sys/system_properties.h>
 #include <cassert>
 #include <cstdarg>
+#include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <string>
 
-namespace duck::language { void install_properties(const std::string &); }
+namespace duck::language { void install_properties(const std::string &, const std::string &); }
 using Callback = void (*)(void *, const char *, const char *, uint32_t);
 using Get = int (*)(const char *, char *);
 using Read = int (*)(const prop_info *, char *, char *);
@@ -41,10 +43,11 @@ extern "C" void *shadowhook_hook_sym_addr(void *target, void *replacement, void 
 int __android_log_print(int, const char *, const char *, ...) { return 0; }
 int main() {
     for (const char *tag : {"en-US", "zh-Hant-TW", "ar"}) {
-        duck::language::install_properties(tag);
+        duck::language::install_properties(tag, "");
         char value[PROP_VALUE_MAX]{}, name[PROP_NAME_MAX]{};
         assert(get("persist.sys.locale", value) == static_cast<int>(std::strlen(tag)));
         assert(std::string(value) == tag);
+        assert(get("persist.sys.timezone", value) == 8 && std::string(value) == "original");
         assert(get("unrelated", value) == 8 && std::string(value) == "original");
         prop_info property{"persist.sys.locale", "real"};
         assert(read(&property, name, value) == static_cast<int>(std::strlen(tag)));
@@ -63,4 +66,19 @@ int main() {
         }, &result);
         assert(result == "unchanged");
     }
+    duck::language::install_properties("", "America/New_York");
+    char value[PROP_VALUE_MAX]{};
+    assert(get("persist.sys.timezone", value) == 16 && std::string(value) == "America/New_York");
+    assert(get("persist.sys.locale", value) == 8 && std::string(value) == "original");
+    assert(std::string(getenv("TZ")) == "America/New_York");
+    time_t epoch = 0;
+    tm broken{};
+    localtime_r(&epoch, &broken);
+    assert(broken.tm_gmtoff == -5 * 3600);
+
+    duck::language::install_properties("ja-JP", "Asia/Tokyo");
+    assert(get("persist.sys.locale", value) == 5 && std::string(value) == "ja-JP");
+    assert(get("persist.sys.timezone", value) == 10 && std::string(value) == "Asia/Tokyo");
+    localtime_r(&epoch, &broken);
+    assert(broken.tm_gmtoff == 9 * 3600);
 }

@@ -108,3 +108,41 @@ test("captures the Chinese language page", async ({ page, open }) => {
     fullPage: true,
   })
 })
+
+test("opens timezone spoofing from Miscellaneous and saves without enabling", async ({
+  page,
+  open,
+}) => {
+  await open("/")
+  await page.getByRole("button", { name: /Miscellaneous/ }).click()
+  await page.getByRole("button", { name: /Timezone spoofing/ }).click()
+  await expect(page.getByRole("button", { name: "Enable", exact: true })).toBeDisabled()
+  await page.getByRole("button", { name: "Add", exact: true }).click()
+  const dialog = page.getByRole("dialog")
+  await dialog.getByRole("button", { name: "Choose installed app" }).click()
+  await dialog.getByRole("searchbox").fill("com.tencent.mm")
+  await dialog.getByRole("button", { name: /com.tencent.mm/ }).click()
+  await dialog.getByLabel("Timezone", { exact: true }).fill("Asia/Tokyo")
+  await dialog.getByRole("button", { name: "Done", exact: true }).click()
+  await expect(page.getByText("com.tencent.mm", { exact: true })).toBeVisible()
+  await expect(page.locator("article").getByText("Asia/Tokyo", { exact: true })).toBeVisible()
+  await page.getByRole("button", { name: "Save", exact: true }).click()
+  await expect(page.getByRole("status").filter({ hasText: /^Disabled$/ })).toBeVisible()
+  await page.getByRole("button", { name: "Enable", exact: true }).click()
+  await page.getByRole("alertdialog").getByRole("button", { name: "Confirm", exact: true }).click()
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Enabled for new app processes$/ }),
+  ).toBeVisible()
+  await page.getByRole("button", { name: "Disable", exact: true }).click()
+  await expect(page.getByRole("status").filter({ hasText: /^Disabled$/ })).toBeVisible()
+})
+
+test("keeps timezone stop available with corrupt rules", async ({ page, open }) => {
+  await open("/misc/timezone", { query: { timezone: "corrupt" } })
+  await expect(
+    page.getByRole("alert").filter({ hasText: /configuration is invalid/ }),
+  ).toBeVisible()
+  await expect(page.getByRole("button", { name: "Enable", exact: true })).toBeDisabled()
+  await page.getByRole("button", { name: "Disable", exact: true }).click()
+  await expect(page.getByRole("button", { name: "Disable", exact: true })).toBeEnabled()
+})

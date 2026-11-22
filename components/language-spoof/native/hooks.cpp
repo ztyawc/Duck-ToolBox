@@ -11,7 +11,7 @@
 extern "C" void *duck_xdl_dsym_prefix(void *, const char *);
 
 namespace duck::language {
-void install_properties(const std::string &locale);
+void install_properties(const std::string &locale, const std::string &timezone);
 // C inline hooks cannot carry user data. This adapter owns only LSPlant's native
 // trampolines in this specialized process; feature configuration stays in Java.
 static std::map<void *, void *> trampolines;
@@ -44,7 +44,7 @@ static jclass load(JNIEnv *env, std::vector<char> &dex) {
     auto result = static_cast<jclass>(env->CallObjectMethod(loader, method, name));
     return env->ExceptionCheck() ? nullptr : result;
 }
-bool install(JNIEnv *env, const std::string &locale, std::vector<char> &dex) {
+bool install(JNIEnv *env, const Policy &policy, std::vector<char> &dex) {
     if (env->PushLocalFrame(32) < 0) { env->ExceptionClear(); return false; }
     bool resident = false;
     auto setup = [&]() {
@@ -88,10 +88,10 @@ bool install(JNIEnv *env, const std::string &locale, std::vector<char> &dex) {
         // The pinned LSPlant resolves symbols during InitNative; cached addresses
         // point into ART itself, so xDL's lookup metadata is released on return.
         if (!initialized || env->ExceptionCheck()) {
-            __android_log_print(ANDROID_LOG_WARN, "DuckLanguage", "ART language hooks unavailable");
+            __android_log_print(ANDROID_LOG_WARN, "DuckLanguage", "ART process hooks unavailable");
             return;
         }
-        install_properties(locale);
+        install_properties(policy.locale, policy.timezone);
         auto entry = load(env, dex);
         if (!entry || env->ExceptionCheck()) return;
         JNINativeMethod methods[] = {{const_cast<char *>("hook"),
@@ -100,16 +100,17 @@ bool install(JNIEnv *env, const std::string &locale, std::vector<char> &dex) {
             {const_cast<char *>("deoptimize"), const_cast<char *>("(Ljava/lang/reflect/Method;)Z"),
              reinterpret_cast<void *>(deoptimize)}};
         if (env->RegisterNatives(entry, methods, 2) != JNI_OK) return;
-        auto method = env->GetStaticMethodID(entry, "install", "(Ljava/lang/String;)I");
+        auto method = env->GetStaticMethodID(entry, "install", "(Ljava/lang/String;Ljava/lang/String;)I");
         if (!method || env->ExceptionCheck()) return;
-        auto tag = env->NewStringUTF(locale.c_str());
-        if (!tag || env->ExceptionCheck()) return;
-        int count = env->CallStaticIntMethod(entry, method, tag);
-        if (!env->ExceptionCheck()) __android_log_print(ANDROID_LOG_INFO, "DuckLanguage", "Installed %d language hooks", count);
+        auto tag = env->NewStringUTF(policy.locale.c_str());
+        auto tz = env->NewStringUTF(policy.timezone.c_str());
+        if (!tag || !tz || env->ExceptionCheck()) return;
+        int count = env->CallStaticIntMethod(entry, method, tag, tz);
+        if (!env->ExceptionCheck()) __android_log_print(ANDROID_LOG_INFO, "DuckLanguage", "Installed %d process hooks", count);
     };
     setup();
     if (env->ExceptionCheck()) {
-        __android_log_print(ANDROID_LOG_WARN, "DuckLanguage", "Language hook initialization failed");
+        __android_log_print(ANDROID_LOG_WARN, "DuckLanguage", "Process hook initialization failed");
         env->ExceptionClear();
     }
     env->PopLocalFrame(nullptr);

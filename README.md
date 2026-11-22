@@ -44,11 +44,12 @@ that edition's local profiles and output files, including exported keyboxes.
   Online template downloads are not embedded. Actual injection needs device validation.
   See [build, lifecycle and protocol](components/device-faker/README.md).
 
-- **Miscellaneous → Language spoofing**: per-app, per-Android-user language rules
-  for Java locale APIs, app/system resources and common native property reads.
-  Requires working Zygisk; configuration and activation are separate. It leaves the
-  device language unchanged. Restart target apps after changes. Native/custom language
-  logic may bypass it and advertisement removal is not guaranteed. See the
+- **Miscellaneous → Language & timezone spoofing**: independent per-app, per-Android-user
+  language and timezone rules for Java locale/timezone APIs, app/system resources and common
+  native property/timezone reads. Requires working Zygisk; configuration and activation are
+  separate for each tool, and neither changes the device language, timezone or system clock.
+  Restart target apps after changes. Native/custom app logic may bypass them and advertisement
+  removal is not guaranteed. See the
   [component, build requirements and device validation procedure](components/language-spoof/README.md).
 
 - **Tricky Store manager**: a complete port of KOWX712's
@@ -333,6 +334,8 @@ duckd zram apply --stdin-json
 duckd zram restore --stdin-json
 duckd zram save --stdin-json
 duckd zram forget <zramN>
+duckd misc language status | save --stdin-json | enable --stdin-json | disable
+duckd misc timezone status | save --stdin-json | enable --stdin-json | disable
 ```
 
 Commands that take input read JSON from stdin with `--stdin-json`.

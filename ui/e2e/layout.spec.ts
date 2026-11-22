@@ -41,6 +41,7 @@ const routes = [
   "/system/activity",
   "/misc",
   "/misc/language",
+  "/misc/timezone",
   "/device-ids",
   "/rkp-device",
   "/tee-attestation",

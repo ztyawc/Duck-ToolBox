@@ -1,6 +1,6 @@
 [package]
 name = "duck-misc"
-description = "Independent miscellaneous tools and per-app language spoofing configuration"
+description = "Independent miscellaneous tools: per-app language and timezone spoofing"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise language rule isolation, companion framing and Java callback behavior."""
+"""Exercise language/timezone rule isolation, companion framing and Java callback behavior."""
 import os
 from pathlib import Path
 import re
@@ -20,7 +20,9 @@ with tempfile.TemporaryDirectory(prefix="duck-language-") as directory:
         os.environ.get("CXX", "c++"), "-std=c++23", "-Wall", "-Wextra", "-Werror", "-pthread",
         "-I", str(COMPONENT / "native"), "-I", str(vendor),
         "-I", str(java_home / "include"), "-I", str(java_home / "include" / platform),
-        f'-DDUCK_LANGUAGE_DATA="{root / "data"}"', f'-DDUCK_LANGUAGE_MODULE="{root / "module"}"',
+        f'-DDUCK_LANGUAGE_DATA="{root / "data"}"',
+        f'-DDUCK_TIMEZONE_DATA="{root / "timezone-data"}"',
+        f'-DDUCK_LANGUAGE_MODULE="{root / "module"}"',
         str(COMPONENT / "tests/native.cpp"), str(COMPONENT / "native/config.cpp"),
         str(COMPONENT / "native/companion.cpp"), "-o", str(binary),
     ], check=True)
@@ -62,6 +64,21 @@ public class LocaleList {
     public boolean isEmpty() { return values.length == 0; }
     public static void setDefault(LocaleList locales) {}
 }''',
+        "android/icu/util/TimeZone.java": '''package android.icu.util;
+import java.time.ZoneId;
+public class TimeZone implements Cloneable {
+    private String id;
+    public TimeZone(String id) { this.id = id; }
+    public static TimeZone getTimeZone(String id) {
+        try { ZoneId.of(id); return new TimeZone(id); }
+        catch (RuntimeException ignored) { return new TimeZone("Etc/Unknown"); }
+    }
+    public static TimeZone getDefault() { return new TimeZone("UTC"); }
+    public static void setDefault(TimeZone tz) {}
+    public String getID() { return id; }
+    public void setID(String id) { this.id = id; }
+    @Override public Object clone() { return new TimeZone(id); }
+}''',
         "android/os/Build.java": '''package android.os;
 public class Build { public static class VERSION { public static int SDK_INT = 26; } }''',
         "android/content/res/Configuration.java": '''package android.content.res;
@@ -98,4 +115,4 @@ public class HiddenApiBypass { public static boolean addHiddenApiExemptions(Stri
     sources.append(COMPONENT / "tests/PolicyTest.java")
     subprocess.run(["javac", "-d", str(root / "classes"), *map(str, sources)], check=True)
     subprocess.run(["java", "-ea", "-cp", str(root / "classes"), "dev.duck.toolbox.language.PolicyTest"], check=True, timeout=10)
-print("Language target isolation, bounded transport and Java callback policy passed")
+print("Language and timezone target isolation, bounded transport and Java callback policy passed")

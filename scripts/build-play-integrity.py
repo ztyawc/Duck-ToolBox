@@ -128,6 +128,7 @@ def main():
     dex = ENGINE / "android/app/build/intermediates/dex/release/minifyReleaseWithR8/classes.dex"
     shutil.copy2(dex, payload / "classes.dex")
     (payload / "language-spoof.version").write_text("1\n")
+    (payload / "timezone-spoof.version").write_text("1\n")
     libraries = ENGINE / "android/app/build/intermediates/stripped_native_libs/release/stripReleaseDebugSymbols/out/lib"
     zygisk = ROOT / "module/zygisk"
     if zygisk.exists():
@@ -171,7 +172,7 @@ def main():
     (payload / "build.json").write_text(json.dumps({
         "upstream_revision": json.loads((ENGINE / "UPSTREAM.json").read_text())["revision"],
         "source_commit": commit,
-        "embedded": {"api": 4, "language_contract": 1, "device_faker_revision": (ROOT / "components/device-faker/UPSTREAM_REVISION").read_text().strip()},
+        "embedded": {"api": 4, "language_contract": 1, "timezone_contract": 1, "device_faker_revision": (ROOT / "components/device-faker/UPSTREAM_REVISION").read_text().strip()},
         "files": {p.relative_to(ROOT / "module").as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in artifacts},
     }, indent=2) + "\n")
 

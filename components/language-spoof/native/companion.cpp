@@ -8,6 +8,9 @@
 #ifndef DUCK_LANGUAGE_DATA
 #define DUCK_LANGUAGE_DATA "/data/adb/duck-toolbox/var/misc/language"
 #endif
+#ifndef DUCK_TIMEZONE_DATA
+#define DUCK_TIMEZONE_DATA "/data/adb/duck-toolbox/var/misc/timezone"
+#endif
 #ifndef DUCK_LANGUAGE_MODULE
 #define DUCK_LANGUAGE_MODULE "/data/adb/modules/duck-toolbox"
 #endif
@@ -48,12 +51,27 @@ static std::vector<char> file(const char *path, size_t maximum) {
     }
     return bytes;
 }
-bool exchange(int fd, const Target &target, std::string &locale, std::vector<char> &dex) {
+static std::string resolve(
+    const char *enabled_path,
+    const char *rules_path,
+    const Target &target,
+    std::string (*selector)(std::string_view, const Target &),
+    std::vector<char> &snapshot
+) {
+    snapshot = file(enabled_path, 64);
+    if (snapshot.empty() || !active(std::string_view(snapshot.data(), snapshot.size()))) return {};
+    auto json = file(rules_path, 65536);
+    if (json.empty()) return {};
+    return selector(std::string_view(json.data(), json.size()), target);
+}
+bool exchange(int fd, const Target &target, Policy &policy, std::vector<char> &dex) {
     Transport transport(fd);
     uint32_t uid = target.uid;
     auto package = target.package;
     return transport.number(uid, true) && transport.blob(package, 255, true)
-        && transport.blob(locale, 12, false) && !locale.empty()
+        && transport.blob(policy.locale, 12, false)
+        && transport.blob(policy.timezone, 64, false)
+        && !policy.empty()
         && transport.blob(dex, 4 * 1024 * 1024, false) && !dex.empty();
 }
 void companion(int fd) {
@@ -63,23 +81,28 @@ void companion(int fd) {
     uint32_t uid = 0;
     if (!transport.number(uid, false) || !transport.blob(target.package, 255, false)) return;
     target.uid = uid;
-    std::string locale;
-    std::vector<char> dex;
-    auto enabled = file(DUCK_LANGUAGE_DATA "/enabled", 64);
-    if (!enabled.empty() && active(std::string_view(enabled.data(), enabled.size()))
-        && absent(DUCK_LANGUAGE_MODULE "/disable")
+    Policy policy;
+    std::vector<char> dex, lang_enabled, tz_enabled;
+    if (absent(DUCK_LANGUAGE_MODULE "/disable")
         && absent(DUCK_LANGUAGE_MODULE "/remove")
         && uid % 100000 >= 10000 && uid % 100000 < 20000) {
-        auto json = file(DUCK_LANGUAGE_DATA "/rules.json", 65536);
-        if (!json.empty()) locale = select(std::string_view(json.data(), json.size()), target);
-        if (!locale.empty()) dex = file(DUCK_LANGUAGE_MODULE "/play-integrity/classes.dex", 4 * 1024 * 1024);
-        if (dex.empty()) locale.clear();
-        // A stop or parent disable during preparation invalidates this response.
-        if (file(DUCK_LANGUAGE_DATA "/enabled", 64) != enabled
-            || !absent(DUCK_LANGUAGE_MODULE "/disable") || !absent(DUCK_LANGUAGE_MODULE "/remove")) {
-            locale.clear(); dex.clear();
+        policy.locale = resolve(DUCK_LANGUAGE_DATA "/enabled", DUCK_LANGUAGE_DATA "/rules.json", target, select, lang_enabled);
+        policy.timezone = resolve(DUCK_TIMEZONE_DATA "/enabled", DUCK_TIMEZONE_DATA "/rules.json", target, select_timezone, tz_enabled);
+        if (!policy.empty()) dex = file(DUCK_LANGUAGE_MODULE "/play-integrity/classes.dex", 4 * 1024 * 1024);
+        // A stop or parent disable during preparation invalidates the affected policy.
+        if (!policy.locale.empty() && file(DUCK_LANGUAGE_DATA "/enabled", 64) != lang_enabled) policy.locale.clear();
+        if (!policy.timezone.empty() && file(DUCK_TIMEZONE_DATA "/enabled", 64) != tz_enabled) policy.timezone.clear();
+        if (dex.empty() || policy.empty()
+            || !absent(DUCK_LANGUAGE_MODULE "/disable")
+            || !absent(DUCK_LANGUAGE_MODULE "/remove")) {
+            policy = {};
+            dex.clear();
         }
     }
-    if (transport.blob(locale, 12, true) && !locale.empty()) transport.blob(dex, 4 * 1024 * 1024, true);
+    if (transport.blob(policy.locale, 12, true)
+        && transport.blob(policy.timezone, 64, true)
+        && !policy.empty()) {
+        transport.blob(dex, 4 * 1024 * 1024, true);
+    }
 }
 }

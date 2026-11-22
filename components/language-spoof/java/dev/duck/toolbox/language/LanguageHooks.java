@@ -3,10 +3,10 @@ package dev.duck.toolbox.language;
 
 import android.content.res.Configuration;
 import android.content.res.Resources;
-import android.os.LocaleList;
 import android.os.Build;
-import org.lsposed.hiddenapibypass.HiddenApiBypass;
+import android.os.LocaleList;
 import android.util.Log;
+import dev.duck.toolbox.timezone.TimezoneHooks;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
@@ -14,57 +14,92 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import org.lsposed.hiddenapibypass.HiddenApiBypass;
 
 /** Immutable process-local policy; never writes settings or system properties. */
 public final class LanguageHooks {
     private final Locale locale;
     private final LocaleList locales;
+    private final TimezoneHooks timezone;
     private final List<Hook> installed = new ArrayList<>();
 
     private LanguageHooks(String tag) {
-        locale = Locale.forLanguageTag(tag);
-        locales = new LocaleList(locale);
+        this(tag, null);
+    }
+
+    LanguageHooks(String tag, TimezoneHooks timezone) {
+        if (tag != null && !tag.isEmpty()) {
+            locale = Locale.forLanguageTag(tag);
+            locales = new LocaleList(locale);
+        } else {
+            locale = null;
+            locales = null;
+        }
+        this.timezone = timezone;
     }
 
     private static native Method hook(Method target, Object owner, Method callback);
     private static native boolean deoptimize(Method method);
 
     public static int install(String tag) {
+        return install(tag, "");
+    }
+
+    public static int install(String tag, String timezoneId) {
+        boolean hasLanguage = tag != null && !tag.isEmpty();
+        boolean wantsTimezone = timezoneId != null && !timezoneId.isEmpty();
+        if (!hasLanguage && !wantsTimezone) return 0;
         if (Build.VERSION.SDK_INT >= 28) {
-            HiddenApiBypass.addHiddenApiExemptions("Landroid/content/res/ResourcesImpl;",
-                "Landroid/os/SystemProperties;", "Landroid/os/LocaleList;",
-                "Landroid/app/IActivityManager$Stub$Proxy;", "Landroid/app/ActivityThread;",
-                "Landroid/app/ResourcesManager;", "Landroid/app/ConfigurationController;");
+            HiddenApiBypass.addHiddenApiExemptions(
+                "Landroid/content/res/ResourcesImpl;",
+                "Landroid/os/SystemProperties;",
+                "Landroid/os/LocaleList;",
+                "Landroid/app/IActivityManager$Stub$Proxy;",
+                "Landroid/app/ActivityThread;",
+                "Landroid/app/ResourcesManager;",
+                "Landroid/app/ConfigurationController;",
+                "Ljava/util/TimeZone;",
+                "Landroid/icu/util/TimeZone;"
+            );
         }
-        LanguageHooks policy = new LanguageHooks(tag);
-        Locale.setDefault(policy.locale);
-        Locale.setDefault(Locale.Category.DISPLAY, policy.locale);
-        Locale.setDefault(Locale.Category.FORMAT, policy.locale);
-        LocaleList.setDefault(policy.locales);
-        policy.systemProperties();
-        policy.methods(Locale.class, "getDefault", Kind.LOCALE);
-        policy.methods(Locale.class, "setDefault", Kind.SET_LOCALE);
-        policy.methods(LocaleList.class, "getDefault", Kind.LOCALES);
-        policy.methods(LocaleList.class, "getAdjustedDefault", Kind.LOCALES);
-        policy.methods(LocaleList.class, "setDefault", Kind.SET_LOCALES);
-        policy.methods(Configuration.class, "getLocales", Kind.LOCALES);
-        policy.methods(Resources.class, "getConfiguration", Kind.CONFIGURATION);
-        policy.optional("android.content.res.ResourcesImpl", "updateConfiguration", Kind.UPDATE);
-        policy.methods(Resources.class, "updateConfiguration", Kind.UPDATE);
-        policy.optional("android.app.LocaleManager", "getSystemLocales", Kind.LOCALES);
-        policy.optional("android.app.LocaleManager", "getApplicationLocales", Kind.APP_LOCALES);
-        policy.optional("android.app.IActivityManager$Stub$Proxy", "getConfiguration", Kind.CONFIGURATION);
+        TimezoneHooks tzPolicy = wantsTimezone ? TimezoneHooks.create(timezoneId) : null;
+        if (!hasLanguage && tzPolicy == null) return 0;
+        LanguageHooks policy = new LanguageHooks(tag, tzPolicy);
+        int count = 0;
+        if (hasLanguage) {
+            Locale.setDefault(policy.locale);
+            Locale.setDefault(Locale.Category.DISPLAY, policy.locale);
+            Locale.setDefault(Locale.Category.FORMAT, policy.locale);
+            LocaleList.setDefault(policy.locales);
+            policy.systemProperties();
+            policy.methods(Locale.class, "getDefault", Kind.LOCALE);
+            policy.methods(Locale.class, "setDefault", Kind.SET_LOCALE);
+            policy.methods(LocaleList.class, "getDefault", Kind.LOCALES);
+            policy.methods(LocaleList.class, "getAdjustedDefault", Kind.LOCALES);
+            policy.methods(LocaleList.class, "setDefault", Kind.SET_LOCALES);
+            policy.methods(Configuration.class, "getLocales", Kind.LOCALES);
+            policy.methods(Resources.class, "getConfiguration", Kind.CONFIGURATION);
+            policy.optional("android.content.res.ResourcesImpl", "updateConfiguration", Kind.UPDATE);
+            policy.methods(Resources.class, "updateConfiguration", Kind.UPDATE);
+            policy.optional("android.app.LocaleManager", "getSystemLocales", Kind.LOCALES);
+            policy.optional("android.app.LocaleManager", "getApplicationLocales", Kind.APP_LOCALES);
+            policy.optional("android.app.IActivityManager$Stub$Proxy", "getConfiguration", Kind.CONFIGURATION);
+            policy.deoptimize("android.app.ActivityThread", "handleBindApplication",
+                "handleConfigurationChanged", "handleActivityConfigurationChanged");
+            policy.deoptimize("android.app.ResourcesManager", "applyConfigurationToResources");
+            policy.deoptimize("android.app.ConfigurationController", "handleConfigurationChanged");
+            Resources system = Resources.getSystem();
+            Configuration configuration = new Configuration(system.getConfiguration());
+            policy.configure(configuration);
+            system.updateConfiguration(configuration, system.getDisplayMetrics());
+        }
+        if (tzPolicy != null) {
+            count += tzPolicy.installHooks(LanguageHooks::hook, LanguageHooks::deoptimize);
+        }
+        // Install shared property hooks once so LSPlant never sees duplicate targets.
         policy.optional("android.os.SystemProperties", "get", Kind.PROPERTY);
         policy.methods(System.class, "getProperty", Kind.JAVA_PROPERTY);
-        policy.deoptimize("android.app.ActivityThread", "handleBindApplication",
-            "handleConfigurationChanged", "handleActivityConfigurationChanged");
-        policy.deoptimize("android.app.ResourcesManager", "applyConfigurationToResources");
-        policy.deoptimize("android.app.ConfigurationController", "handleConfigurationChanged");
-        Resources system = Resources.getSystem();
-        Configuration configuration = new Configuration(system.getConfiguration());
-        policy.configure(configuration);
-        system.updateConfiguration(configuration, system.getDisplayMetrics());
-        return policy.installed.size();
+        return count + policy.installed.size();
     }
 
     private void systemProperties() {
@@ -190,6 +225,11 @@ public final class LanguageHooks {
 
         private String property(String name, boolean java) {
             if (name == null) return null;
+            if (policy.timezone != null) {
+                String tz = policy.timezone.property(name, java);
+                if (tz != null) return tz;
+            }
+            if (policy.locale == null) return null;
             if (java) {
                 switch (name) {
                     case "user.language": return policy.locale.getLanguage();

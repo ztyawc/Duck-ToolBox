@@ -99,6 +99,24 @@ class DistributionIntegrityTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "language contract"):
                     package.validate_language_contract(invalid, module)
 
+    def test_timezone_contract_requires_both_metadata_and_the_version_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            module = Path(directory)
+            payload = module / "play-integrity"
+            payload.mkdir()
+            manifest = {"embedded": {"timezone_contract": 1}}
+            marker = payload / "timezone-spoof.version"
+            for value in (None, b"", b"2\n", b"1", b"1\nextra"):
+                if value is not None:
+                    marker.write_bytes(value)
+                with self.subTest(value=value), self.assertRaisesRegex(ValueError, "timezone contract"):
+                    package.validate_timezone_contract(manifest, module)
+            marker.write_bytes(b"1\n")
+            package.validate_timezone_contract(manifest, module)
+            for invalid in ({}, {"embedded": {"timezone_contract": 2}}):
+                with self.assertRaisesRegex(ValueError, "timezone contract"):
+                    package.validate_timezone_contract(invalid, module)
+
     def test_repackaging_removes_legacy_source_archives_but_preserves_notices(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

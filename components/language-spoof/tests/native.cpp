@@ -46,29 +46,46 @@ int main(int argc, char **argv) {
         auto malformed = std::string(R"({"rules":[{"package_name":"com.example.app","user_id":0,"locale":")") + tag + R"("}]})";
         assert(select(malformed, main).empty());
     }
+    std::string tz_rules = R"({"rules":[{"package_name":"com.example.app","user_id":0,"timezone":"America/New_York"},{"package_name":"com.example.app","user_id":10,"timezone":"America/Argentina/Buenos_Aires"}]})";
+    assert(select_timezone(tz_rules, main) == "America/New_York");
+    assert(select_timezone(tz_rules, work) == "America/Argentina/Buenos_Aires");
+    assert(select_timezone(R"({"rules":[{"package_name":"com.example.app","user_id":0,"timezone":"utc"}]})", main) == "UTC");
+    for (const char *tz : {"EST5EDT", ":/etc/localtime", "../America/New_York", "America//New_York", "America/New York", "A/B/C/D", "GMT+8"}) {
+        auto malformed = std::string(R"({"rules":[{"package_name":"com.example.app","user_id":0,"timezone":")") + tz + R"("}]})";
+        assert(select_timezone(malformed, main).empty());
+    }
     put(root + "/data/rules.json", rules);
     put(root + "/data/enabled", "1:activation");
     put(root + "/module/play-integrity/classes.dex", "test-dex");
     auto request = [&](const Target &target) {
         int fds[2]; assert(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
         std::thread server([&] { companion(fds[1]); close(fds[1]); });
-        std::string locale; std::vector<char> dex;
-        bool result = exchange(fds[0], target, locale, dex);
+        Policy policy; std::vector<char> dex;
+        bool result = exchange(fds[0], target, policy, dex);
         close(fds[0]); server.join();
         if (result) assert(std::string(dex.begin(), dex.end()) == "test-dex");
-        return result ? locale : "";
+        return result ? policy : Policy{};
     };
-    assert(request(main) == "en-US");
-    assert(request(work) == "ja-JP");
+    assert(request(main).locale == "en-US" && request(main).timezone.empty());
+    assert(request(work).locale == "ja-JP" && request(work).timezone.empty());
+    put(root + "/timezone-data/rules.json", tz_rules);
+    put(root + "/timezone-data/enabled", "1:tz-active");
+    auto both = request(main);
+    assert(both.locale == "en-US" && both.timezone == "America/New_York");
+    put(root + "/data/enabled", "0:stopped");
+    auto tz_only = request(main);
+    assert(tz_only.locale.empty() && tz_only.timezone == "America/New_York");
+    put(root + "/timezone-data/enabled", "0:stopped");
+    assert(request(main).empty());
+    put(root + "/data/enabled", "1:activation");
+    put(root + "/timezone-data/enabled", "1:tz-active");
     put(root + "/module/disable", "");
     assert(request(main).empty());
     std::filesystem::remove(root + "/module/disable");
     std::filesystem::create_symlink(root + "/missing", root + "/module/disable");
     assert(request(main).empty());
     std::filesystem::remove(root + "/module/disable");
-    put(root + "/data/enabled", "0:stopped");
-    assert(request(main).empty());
-    put(root + "/data/enabled", "1:activation");
+    put(root + "/timezone-data/enabled", "0:stopped");
     put(root + "/data/rules.json", "broken");
     assert(request(main).empty());
     put(root + "/data/rules.json", rules);

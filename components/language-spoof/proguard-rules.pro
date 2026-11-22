@@ -1,1 +1,2 @@
 -keep class dev.duck.toolbox.language.** { *; }
+-keep class dev.duck.toolbox.timezone.** { *; }

@@ -3,7 +3,9 @@
 #include <sys/system_properties.h>
 #include <android/log.h>
 #include <atomic>
+#include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <dlfcn.h>
 #include <map>
 #include <string>
@@ -59,22 +61,25 @@ class Properties {
         return static_cast<int>(found->second.size());
     }
 public:
-    explicit Properties(const std::string &tag) {
-        const auto first = tag.find('-');
-        const auto last = tag.rfind('-');
-        std::string language = tag.substr(0, first);
-        std::string region = last == tag.npos ? "" : tag.substr(last + 1);
-        if (region.size() != 2 && region.size() != 3) region.clear();
-        values = {{"persist.sys.locale", tag}, {"ro.product.locale", tag},
-            {"persist.sys.language", language}, {"ro.product.locale.language", language},
-            {"persist.sys.country", region}, {"ro.product.locale.region", region}};
+    Properties(const std::string &tag, const std::string &timezone) {
+        if (!tag.empty()) {
+            const auto first = tag.find('-');
+            const auto last = tag.rfind('-');
+            std::string language = tag.substr(0, first);
+            std::string region = last == tag.npos ? "" : tag.substr(last + 1);
+            if (region.size() != 2 && region.size() != 3) region.clear();
+            values = {{"persist.sys.locale", tag}, {"ro.product.locale", tag},
+                {"persist.sys.language", language}, {"ro.product.locale.language", language},
+                {"persist.sys.country", region}, {"ro.product.locale.region", region}};
+        }
+        if (!timezone.empty()) values["persist.sys.timezone"] = timezone;
     }
     void install() {
         installed.store(this, std::memory_order_release);
         auto attach = [](const char *name, void *replacement, void **original) {
             void *symbol = dlsym(RTLD_DEFAULT, name);
             if (!symbol || !shadowhook_hook_sym_addr(symbol, replacement, original))
-                __android_log_print(ANDROID_LOG_WARN, "DuckLanguage", "Native language hook unavailable: %s", name);
+                __android_log_print(ANDROID_LOG_WARN, "DuckLanguage", "Native property hook unavailable: %s", name);
         };
         attach("__system_property_get", reinterpret_cast<void *>(get), reinterpret_cast<void **>(&original_get));
         attach("__system_property_read", reinterpret_cast<void *>(read), reinterpret_cast<void **>(&original_read));
@@ -84,9 +89,14 @@ public:
     }
 };
 std::atomic<Properties *> Properties::installed{nullptr};
-void install_properties(const std::string &locale) {
+void install_properties(const std::string &locale, const std::string &timezone) {
+    if (locale.empty() && timezone.empty()) return;
+    if (!timezone.empty()) {
+        setenv("TZ", timezone.c_str(), 1);
+        tzset();
+    }
     // Hook targets have C ABI and keep this owner for the target process lifetime.
-    auto *policy = new Properties(locale);
+    auto *policy = new Properties(locale, timezone);
     policy->install();
 }
 }
