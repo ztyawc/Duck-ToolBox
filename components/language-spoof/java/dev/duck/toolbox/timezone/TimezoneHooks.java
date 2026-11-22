@@ -70,11 +70,7 @@ public final class TimezoneHooks {
     public int installHooks(Hooker hooker, Deoptimizer deoptimizer) {
         TimeZone.setDefault((TimeZone) zone.clone());
         if (icuZone != null) {
-            try {
-                android.icu.util.TimeZone.setDefault((android.icu.util.TimeZone) icuZone.clone());
-            } catch (LinkageError | RuntimeException ignored) {
-                Log.w("DuckTimezone", "Optional ICU default timezone could not be preselected");
-            }
+            preselectIcuDefault();
         }
         System.setProperty("user.timezone", id);
         methods(hooker, TimeZone.class, "getDefault", Kind.ZONE);
@@ -95,6 +91,20 @@ public final class TimezoneHooks {
         if (name == null) return null;
         if (java) return "user.timezone".equals(name) ? id : null;
         return "persist.sys.timezone".equals(name) ? id : null;
+    }
+
+    private void preselectIcuDefault() {
+        for (String name : new String[]{"setDefault", "setICUDefault"}) {
+            try {
+                Method setter = android.icu.util.TimeZone.class.getDeclaredMethod(
+                    name, android.icu.util.TimeZone.class);
+                setter.setAccessible(true);
+                setter.invoke(null, icuZone.clone());
+                return;
+            } catch (ReflectiveOperationException | LinkageError | RuntimeException ignored) {
+            }
+        }
+        Log.w("DuckTimezone", "Optional ICU default timezone could not be preselected");
     }
 
     private void optional(Hooker hooker, String clazz, String name, Kind kind) {
